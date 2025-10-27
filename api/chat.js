@@ -1,4 +1,6 @@
 // POST /api/chat  (storefront calls it as /apps/aichat/chat via App Proxy)
+console.log("Chat endpoint triggered", req.method);
+console.log("Environment check", !!process.env.OPENAI_API_KEY);
 export default async function handler(req, res) {
   // Allow CORS when you test directly against Vercel; harmless behind proxy
   res.setHeader('Access-Control-Allow-Origin', '*');
