@@ -1,83 +1,93 @@
+// pages/api/chat.js
+
 export const config = {
   api: {
-    bodyParser: true, // allow Next to parse urlencoded + json
+    bodyParser: true,           // allow Next.js to parse JSON or urlencoded
+    sizeLimit: '1mb',
   },
 };
 
+function parseMessagesFromRequest(req) {
+  const ct = req.headers['content-type'] || '';
+
+  // Case A: JSON body
+  if (ct.includes('application/json')) {
+    if (!req.body || typeof req.body !== 'object') {
+      throw new Error('Invalid JSON body');
+    }
+    const { messages } = req.body;
+    if (!Array.isArray(messages)) {
+      throw new Error('Missing "messages" array in JSON body');
+    }
+    return messages;
+  }
+
+  // Case B: x-www-form-urlencoded with a JSON string in "payload"
+  if (ct.includes('application/x-www-form-urlencoded')) {
+    const payloadRaw = req.body?.payload;
+    if (!payloadRaw) throw new Error('Missing "payload" in form body');
+
+    let data;
+    try {
+      data = typeof payloadRaw === 'string' ? JSON.parse(payloadRaw) : payloadRaw;
+    } catch (e) {
+      throw new Error('Invalid JSON in "payload"');
+    }
+
+    if (!Array.isArray(data?.messages)) {
+      throw new Error('Missing "messages" array in payload');
+    }
+    return data.messages;
+  }
+
+  // Anything else
+  throw new Error(`Unsupported Content-Type: ${ct}`);
+}
+
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+
+  // Basic env guard
+  if (!process.env.OPENAI_API_KEY) {
+    return res.status(500).json({ error: 'Missing OPENAI_API_KEY' });
+  }
+
+  let messages;
+  try {
+    messages = parseMessagesFromRequest(req);
+  } catch (err) {
+    console.error('Parse error:', err.message);
+    return res.status(400).json({ error: err.message });
   }
 
   try {
-    // 1) Accept both JSON and x-www-form-urlencoded with `payload=...`
-    let payload = req.body;
-
-    // If Shopify proxy sent `payload=...`
-    if (payload && typeof payload === "object" && "payload" in payload) {
-      payload = payload.payload;
-    }
-
-    if (typeof payload === "string") {
-      try {
-        payload = JSON.parse(payload);
-      } catch {
-        return res
-          .status(400)
-          .json({ ok: false, reply: "Bad payload JSON in 'payload' string." });
-      }
-    }
-
-    const messages = payload?.messages;
-    if (!Array.isArray(messages) || messages.length === 0) {
-      return res
-        .status(400)
-        .json({ ok: false, reply: "Missing 'messages' array in payload." });
-    }
-
-    if (!process.env.OPENAI_API_KEY) {
-      return res.status(500).json({
-        ok: false,
-        reply: "OPENAI_API_KEY is not set in the environment.",
-      });
-    }
-
-    // 2) Call OpenAI (pick a model you have access to)
-    const oaiResp = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
+    // Call OpenAI
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-3.5-turbo", // or gpt-4o-mini if your account supports it
+        model: 'gpt-4o-mini',  // or the model you prefer
         messages,
       }),
     });
 
-    if (!oaiResp.ok) {
-      const text = await oaiResp.text();
-      console.error("OpenAI non-OK:", oaiResp.status, text);
-      return res.status(502).json({
-        ok: false,
-        reply: "OpenAI API returned an error.",
-        status: oaiResp.status,
-        raw: text, // ← temporary to debug; remove later
-      });
+    const json = await r.json();
+
+    if (!r.ok) {
+      // Bubble up clear errors (e.g., 429 quota)
+      console.error('OpenAI non-OK:', r.status, json);
+      return res.status(r.status).json(json);
     }
 
-    const data = await oaiResp.json();
-    const reply =
-      data?.choices?.[0]?.message?.content?.trim() ||
-      "No response from the model.";
-
-    return res.json({ ok: true, reply });
+    const reply = json?.choices?.[0]?.message?.content || '';
+    return res.status(200).json({ ok: true, reply });
   } catch (err) {
-    console.error("Server error:", err);
-    return res.status(500).json({
-      ok: false,
-      reply: "Internal server error.",
-      detail: String(err), // temporary for debugging
-    });
+    console.error('Server error:', err);
+    return res.status(500).json({ error: 'Server error' });
   }
 }
